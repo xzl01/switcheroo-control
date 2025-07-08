@@ -1,0 +1,132 @@
+From 5ef85162d10e0c1b5f4bcf2ce4297f567c75f386 Mon Sep 17 00:00:00 2001
+From: xzl <xiangzelong@deepin.org>
+Date: Tue, 8 Jul 2025 17:11:33 +0800
+Subject: [PATCH 1/1] add dde-am launch apps support
+
+---
+ src/switcherooctl.in | 71 ++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 58 insertions(+), 13 deletions(-)
+
+diff --git a/src/switcherooctl.in b/src/switcherooctl.in
+index 96c21cc..eecbbf9 100755
+--- a/src/switcherooctl.in
++++ b/src/switcherooctl.in
+@@ -1,7 +1,7 @@
+ #!@PYTHON3@
+ 
+ from gi.repository import Gio, GLib
+-import sys, os
++import sys, os, shutil
+ 
+ VERSION = '@VERSION@'
+ 
+@@ -58,11 +58,48 @@ def version():
+     print (VERSION)
+ 
+ def launch(args, gpu):
+-    if gpu:
+-        # print (gpu['Environment'])
+-        for k,v in zip(gpu['Environment'][0::2], gpu['Environment'][1::2]):
++    """启动应用程序，优先使用 dde-am，不存在时回退到直接启动"""
++    
++    # 检查 dde-am 是否可用
++    if shutil.which("dde-am"):
++        try:
++            launch_with_dde_am(args, gpu)
++        except Exception as e:
++            print(f"Failed to launch with dde-am: {e}")
++            print("Falling back to direct execution...")
++            launch_original(args, gpu)
++    else:
++        print("dde-am not found, using direct execution...")
++        launch_original(args, gpu)
++
++def launch_with_dde_am(args, gpu):
++    """使用 dde-am 启动应用程序"""
++    cmd = ["dde-am"]
++    
++    if gpu and gpu.get('Environment'):
++        # 为每个环境变量添加单独的 -e 参数
++        env_vars = gpu.get('Environment', [])
++        for k,v in zip(env_vars[0::2], env_vars[1::2]):
++            cmd.extend(["-e", f"{k}={v}"])
++    
++    # 添加要启动的应用程序和参数
++    cmd.extend(args)
++    
++    # 调试输出（可选，用于验证命令构建是否正确）
++    print("Executing with dde-am:", " ".join(cmd))
++    
++    os.execvp("dde-am", cmd)
++
++def launch_original(args, gpu):
++    """原有的启动逻辑（回退方案）"""
++    if gpu and gpu.get('Environment'):
++        # 设置环境变量到当前进程
++        env_vars = gpu.get('Environment', [])
++        for k,v in zip(env_vars[0::2], env_vars[1::2]):
+             os.environ[k] = v
+-            # print ('%s = %s' % (k, v))
++            print(f"Setting environment: {k}={v}")
++    
++    print("Executing directly:", " ".join(args))
+     os.execvp(args[0], args)
+ 
+ def env_to_str(env):
+@@ -75,9 +112,10 @@ def print_gpu(gpu, index):
+     if index > 0:
+         print('')
+     print('Device:', index)
+-    print('  Name:       ', gpu['Name'])
+-    print('  Default:    ', "yes" if gpu['Default'] else "no")
+-    print('  Environment:', env_to_str(gpu['Environment']))
++    print('  Name:       ', gpu.get('Name', 'Unknown'))
++    print('  Default:    ', "yes" if gpu.get('Default', False) else "no")
++    print('  Discrete:   ', "yes" if gpu.get('Discrete', False) else "no")
++    print('  Environment:', env_to_str(gpu.get('Environment', [])))
+ 
+ def _list():
+     try:
+@@ -109,12 +147,15 @@ def get_gpus():
+     else:
+         # Move the first GPU to the front, it's the default
+         try:
+-            default_gpu = next(gpu for gpu in gpus if gpu['Default'])
++            default_gpu = next(gpu for gpu in gpus if gpu.get('Default', False))
+         except:
+             # The first GPU is the default if there's no default
+-            default_gpu = gpus[0]
+-            pass
+-        gpus.remove(default_gpu)
++            if gpus:
++                default_gpu = gpus[0]
++            else:
++                return []
++        if default_gpu in gpus:
++            gpus.remove(default_gpu)
+         gpus.insert(0, default_gpu)
+         return gpus
+ 
+@@ -126,7 +167,7 @@ def get_discrete_gpu():
+         return None
+ 
+     try:
+-        gpu = next(gpu for gpu in gpus if not gpu['Default'])
++        gpu = next(gpu for gpu in gpus if gpu.get('Discrete', False))
+     except StopIteration:
+         return None
+     else:
+@@ -184,6 +225,10 @@ elif command == 'launch':
+         gpu = get_gpu(index)
+     else:
+         gpu = get_discrete_gpu()
++        # 如果没有独立GPU，使用默认GPU（索引0）
++        if gpu is None:
++            print("No discrete GPU found, using default GPU...")
++            gpu = get_gpu(0)
+     launch(args, gpu)
+ elif command == 'list':
+     _list()
+-- 
+2.47.2
+
